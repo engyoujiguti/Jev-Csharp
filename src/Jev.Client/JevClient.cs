@@ -9,7 +9,10 @@ namespace Jev.Client;
 /// <summary>A .NET client for the TypeSafe AI Jev System One API.</summary>
 public sealed class JevClient : IDisposable
 {
-    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
+    {
+        AllowOutOfOrderMetadataProperties = true
+    };
 
     private readonly HttpClient _httpClient;
     private readonly string _apiKey;
@@ -68,6 +71,7 @@ public sealed class JevClient : IDisposable
             if (IsRetryable(response.StatusCode) && attempt < _options.MaxRetries)
             {
                 var retryDelay = GetRetryDelay(response, attempt);
+                response.Dispose();
                 await Task.Delay(retryDelay, _options.TimeProvider, cancellationToken)
                     .ConfigureAwait(false);
                 continue;

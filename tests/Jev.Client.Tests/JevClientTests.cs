@@ -21,19 +21,19 @@ public sealed class JevClientTests
                   "model": "jev-1.13.0",
                   "answers": {
                     "department": {
-                      "type": "choice",
                       "choice": "technical",
                       "confidence": 0.78,
-                      "probabilities": { "technical": 0.85, "billing": 0.15 }
+                      "probabilities": { "technical": 0.85, "billing": 0.15 },
+                      "type": "choice"
                     },
                     "frustration": {
-                      "type": "score",
                       "score": 1.05,
                       "confidence": 0.92,
                       "legend": { "0": "Calm", "1": "Frustrated" },
-                      "probabilities": { "0": 0.05, "1": 0.95 }
+                      "probabilities": { "0": 0.05, "1": 0.95 },
+                      "type": "score"
                     },
-                    "urgent": { "type": "noul", "noul": 0.95 }
+                    "urgent": { "noul": 0.95, "type": "noul" }
                   },
                   "usage": { "input_tokens": 300, "output_tokens": 40 }
                 }
@@ -79,11 +79,16 @@ public sealed class JevClientTests
     public async Task EvaluateAsync_RetriesRateLimitResponse()
     {
         var attempts = 0;
+        var retryContent = new TrackingContent("{\"error\":\"slow down\"}");
+        var timeProvider = new InspectingTimeProvider(() => retryContent.IsDisposed);
         var handler = new StubHttpMessageHandler((_, _) =>
         {
             attempts++;
             return Task.FromResult(attempts == 1
-                ? JsonResponse(HttpStatusCode.TooManyRequests, "{\"error\":\"slow down\"}")
+                ? new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+                {
+                    Content = retryContent
+                }
                 : JsonResponse(HttpStatusCode.OK, """
                     {
                       "model": "jev-1.13.0",
@@ -97,12 +102,14 @@ public sealed class JevClientTests
         using var client = new JevClient(httpClient, "test-key", new JevClientOptions
         {
             MaxRetries = 1,
-            RetryBaseDelay = TimeSpan.Zero
+            RetryBaseDelay = TimeSpan.FromSeconds(1),
+            TimeProvider = timeProvider
         });
 
         await client.EvaluateAsync(NoulRequest());
 
         Assert.Equal(2, attempts);
+        Assert.True(timeProvider.ResourceWasDisposedWhenDelayScheduled);
     }
 
     [Fact]
@@ -140,5 +147,36 @@ public sealed class JevClientTests
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken) => handler(request, cancellationToken);
+    }
+
+    private sealed class TrackingContent(string content)
+        : StringContent(content, Encoding.UTF8, "application/json")
+    {
+        public bool IsDisposed { get; private set; }
+
+        protected override void Dispose(bool disposing)
+        {
+            IsDisposed = true;
+            base.Dispose(disposing);
+        }
+    }
+
+    private sealed class InspectingTimeProvider(Func<bool> inspectResource) : TimeProvider
+    {
+        public bool ResourceWasDisposedWhenDelayScheduled { get; private set; }
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period)
+        {
+            ResourceWasDisposedWhenDelayScheduled = inspectResource();
+            return TimeProvider.System.CreateTimer(
+                callback,
+                state,
+                TimeSpan.Zero,
+                Timeout.InfiniteTimeSpan);
+        }
     }
 }
